@@ -18,12 +18,28 @@ class CsafeProtocolTest {
         val cmd = byteArrayOf(CsafeConstants.CSAFE_GETPOWER_CMD)
         val packed = CsafeProtocol.packFrame(cmd)
 
-        assertEquals(CsafeConstants.WRITE_BUF_SIZE, packed.size)
-        assertEquals(CsafeConstants.REPORT_TYPE, packed[0])       // 0x02
+        // Short command (5 framed bytes) defaults to REPORT_ID_SHORT (21 bytes)
+        assertEquals(CsafeConstants.REPORT_SIZE_SHORT, packed.size)
+        assertEquals(CsafeConstants.REPORT_ID_SHORT, packed[0])   // 0x01
         assertEquals(CsafeConstants.FRAME_START_BYTE, packed[1])  // 0xF1
         assertEquals(CsafeConstants.CSAFE_GETPOWER_CMD, packed[2]) // 0xB4
         assertEquals(CsafeConstants.CSAFE_GETPOWER_CMD, packed[3]) // Checksum = 0xB4
         assertEquals(CsafeConstants.FRAME_END_BYTE, packed[4])    // 0xF2
+    }
+
+    @Test
+    fun testPackFrameDynamicReportSelection() {
+        // Compound telemetry with expected response <= 63 bytes selects Report ID 0x04
+        val telemetryCmd = CsafeProtocol.buildCombinedTelemetryCommand()
+        val packedTelemetry = CsafeProtocol.packFrame(telemetryCmd, maxResponseBytes = 40)
+        assertEquals(CsafeConstants.REPORT_SIZE_MEDIUM, packedTelemetry.size)
+        assertEquals(CsafeConstants.REPORT_ID_MEDIUM, packedTelemetry[0]) // 0x04
+
+        // Force plot query with expected response > 63 bytes selects Report ID 0x02
+        val forcePlotCmd = CsafeProtocol.buildForcePlotCommand(32)
+        val packedForcePlot = CsafeProtocol.packFrame(forcePlotCmd, maxResponseBytes = 100)
+        assertEquals(CsafeConstants.REPORT_SIZE_LONG, packedForcePlot.size)
+        assertEquals(CsafeConstants.REPORT_ID_LONG, packedForcePlot[0]) // 0x02
     }
 
     @Test
@@ -50,17 +66,25 @@ class CsafeProtocolTest {
     @Test
     fun testCommandBuilders() {
         val strokeCmd = CsafeProtocol.buildStrokeStateCommand()
-        assertEquals(4, strokeCmd.size)
+        assertEquals(3, strokeCmd.size)
         assertEquals(CsafeConstants.CSAFE_PM_WRAPPER, strokeCmd[0])
+        assertEquals(1.toByte(), strokeCmd[1]) // wrapper length
         assertEquals(CsafeConstants.CSAFE_PM_GET_STROKESTATE, strokeCmd[2])
 
         val forceCmd = CsafeProtocol.buildForcePlotCommand(32)
-        assertEquals(4, forceCmd.size)
+        assertEquals(5, forceCmd.size)
         assertEquals(CsafeConstants.CSAFE_PM_WRAPPER, forceCmd[0])
+        assertEquals(3.toByte(), forceCmd[1]) // wrapper length
         assertEquals(CsafeConstants.CSAFE_PM_GET_FORCEPLOTDATA, forceCmd[2])
-        assertEquals(32.toByte(), forceCmd[3])
+        assertEquals(1.toByte(), forceCmd[3]) // arg count
+        assertEquals(32.toByte(), forceCmd[4]) // bytes requested
 
         val combinedCmd = CsafeProtocol.buildCombinedTelemetryCommand()
-        assertTrue(combinedCmd.isNotEmpty())
+        assertEquals(9, combinedCmd.size)
+        assertEquals(CsafeConstants.CSAFE_GETPOWER_CMD, combinedCmd[0])
+        assertEquals(CsafeConstants.CSAFE_GETCADENCE_CMD, combinedCmd[1])
+        assertEquals(CsafeConstants.CSAFE_GETHRCUR_CMD, combinedCmd[2])
+        assertEquals(CsafeConstants.CSAFE_PM_WRAPPER, combinedCmd[3])
+        assertEquals(4.toByte(), combinedCmd[4])
     }
 }

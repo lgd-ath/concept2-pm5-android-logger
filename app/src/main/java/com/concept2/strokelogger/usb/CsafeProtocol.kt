@@ -10,24 +10,18 @@ object CsafeProtocol {
 
     /**
      * Encapsulates raw CSAFE command bytes into a complete USB HID output report.
-     *
-     * Structure of the output report:
-     * - Byte 0: Report ID (0x02)
-     * - Byte 1: Start Frame Byte (0xF1)
-     * - Bytes 2..N: Escaped command bytes (byte-stuffed if 0xF0..0xF3)
-     * - Byte N+1: Checksum byte (XOR sum of unescaped command bytes)
-     * - Byte N+2: End Frame Byte (0xF2)
-     * - Remaining bytes up to 121: 0x00 padding
+     * Selects the proper Concept2 HID Report ID and buffer length:
+     * - Report ID 0x01 (21 bytes) for short commands (max response <= 21)
+     * - Report ID 0x04 (63 bytes) for standard telemetry (max response <= 63)
+     * - Report ID 0x02 (121 bytes) for large transfers like force plots
      *
      * @param commandBytes Array of raw CSAFE command bytes.
-     * @return 121-byte array ready to transmit to PM5 OUT endpoint.
+     * @param maxResponseBytes Expected maximum response size to guide report selection.
+     * @return Padded byte array ready to transmit to PM5 OUT endpoint.
      */
-    fun packFrame(commandBytes: ByteArray): ByteArray {
-        val out = ByteArray(CsafeConstants.WRITE_BUF_SIZE)
-        out[0] = CsafeConstants.REPORT_TYPE // 0x02
-
+    fun packFrame(commandBytes: ByteArray, maxResponseBytes: Int = 0): ByteArray {
         val frameStream = ByteArrayOutputStream()
-        frameStream.write(CsafeConstants.FRAME_START_BYTE.toInt())
+        frameStream.write(CsafeConstants.FRAME_START_BYTE.toInt()) // 0xF1
 
         var checksum = 0
         for (b in commandBytes) {
@@ -44,17 +38,29 @@ object CsafeProtocol {
         }
 
         // Checksum byte stuffing
-        if (checksum in 0xF0..0xF3) {
+        val chkVal = checksum and 0xFF
+        if (chkVal in 0xF0..0xF3) {
             frameStream.write(CsafeConstants.FRAME_STUFF_BYTE.toInt())
-            frameStream.write(checksum and 0x03)
+            frameStream.write(chkVal and 0x03)
         } else {
-            frameStream.write(checksum)
+            frameStream.write(chkVal)
         }
 
-        frameStream.write(CsafeConstants.FRAME_END_BYTE.toInt())
+        frameStream.write(CsafeConstants.FRAME_END_BYTE.toInt()) // 0xF2
 
-        val frameArray = frameStream.toByteArray()
-        System.arraycopy(frameArray, 0, out, 1, frameArray.size.coerceAtMost(CsafeConstants.USB_CSAFE_SIZE))
+        val framed = frameStream.toByteArray()
+        val totalLength = framed.size + 1 // +1 for Report ID byte
+        val maxLen = maxOf(totalLength, maxResponseBytes)
+
+        val (reportId, targetSize) = when {
+            maxLen <= CsafeConstants.REPORT_SIZE_SHORT -> Pair(CsafeConstants.REPORT_ID_SHORT, CsafeConstants.REPORT_SIZE_SHORT)
+            maxLen <= CsafeConstants.REPORT_SIZE_MEDIUM -> Pair(CsafeConstants.REPORT_ID_MEDIUM, CsafeConstants.REPORT_SIZE_MEDIUM)
+            else -> Pair(CsafeConstants.REPORT_ID_LONG, CsafeConstants.REPORT_SIZE_LONG)
+        }
+
+        val out = ByteArray(targetSize)
+        out[0] = reportId
+        System.arraycopy(framed, 0, out, 1, framed.size)
         return out
     }
 
@@ -125,55 +131,57 @@ object CsafeProtocol {
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // CSAFE Command Builders
+    // CSAFE Command Builders (Standard Concept2 / PyRow protocol structure)
     // ────────────────────────────────────────────────────────────────────────
 
     /** Build stroke state query command (CSAFE_PM_GET_STROKESTATE). */
     fun buildStrokeStateCommand(): ByteArray {
         return byteArrayOf(
             CsafeConstants.CSAFE_PM_WRAPPER,
-            0x01.toByte(),
-            CsafeConstants.CSAFE_PM_GET_STROKESTATE,
-            0x00.toByte()
+            0x01.toByte(), // wrapper data length = 1
+            CsafeConstants.CSAFE_PM_GET_STROKESTATE
         )
     }
 
-    /** Build force plot data query command (CSAFE_PM_GET_FORCEPLOTDATA). */
+    /**
+     * Build force plot data query command (CSAFE_PM_GET_FORCEPLOTDATA).
+     * Concept2 format: [0x1A, 0x03, 0x6B, 0x01, bytesRequested]
+     */
     fun buildForcePlotCommand(bytesRequested: Int = 32): ByteArray {
         return byteArrayOf(
             CsafeConstants.CSAFE_PM_WRAPPER,
-            0x02.toByte(),
+            0x03.toByte(), // wrapper data length = 3
             CsafeConstants.CSAFE_PM_GET_FORCEPLOTDATA,
+            0x01.toByte(), // 1 argument follows
             bytesRequested.toByte()
         )
     }
 
     /**
      * Builds a single high-efficiency compound telemetry frame querying:
-     * - Stroke state (0xBF)
      * - Instantaneous power in Watts (0xB4)
      * - Stroke cadence in SPM (0xA7)
-     * - Work time (0xA0)
-     * - Work distance (0xA3)
      * - Heart rate (0xB0)
-     * - Drag factor (0xC1)
+     * - PM Wrapper 0x1A with length 4:
+     *     - Work time (0xA0)
+     *     - Work distance (0xA3)
+     *     - Stroke state (0xBF)
+     *     - Drag factor (0xC1)
+     *
+     * Total command payload is 9 bytes, fits cleanly in Report ID 0x04 (63 bytes).
+     * Completely free of invalid trailing zeroes or malformed subcommands.
      */
     fun buildCombinedTelemetryCommand(): ByteArray {
-        val stream = ByteArrayOutputStream()
-        // PM Stroke State
-        stream.write(byteArrayOf(CsafeConstants.CSAFE_PM_WRAPPER, 0x01, CsafeConstants.CSAFE_PM_GET_STROKESTATE, 0x00))
-        // Power (Watts)
-        stream.write(CsafeConstants.CSAFE_GETPOWER_CMD.toInt())
-        // Cadence (SPM)
-        stream.write(CsafeConstants.CSAFE_GETCADENCE_CMD.toInt())
-        // Heart Rate
-        stream.write(CsafeConstants.CSAFE_GETHRCUR_CMD.toInt())
-        // Work Time
-        stream.write(byteArrayOf(CsafeConstants.CSAFE_PM_WRAPPER, 0x01, CsafeConstants.CSAFE_PM_GET_WORKTIME, 0x00))
-        // Work Distance
-        stream.write(byteArrayOf(CsafeConstants.CSAFE_PM_WRAPPER, 0x01, CsafeConstants.CSAFE_PM_GET_WORKDISTANCE, 0x00))
-        // Drag Factor
-        stream.write(byteArrayOf(CsafeConstants.CSAFE_PM_WRAPPER, 0x01, CsafeConstants.CSAFE_PM_GET_DRAGFACTOR, 0x00))
-        return stream.toByteArray()
+        return byteArrayOf(
+            CsafeConstants.CSAFE_GETPOWER_CMD,
+            CsafeConstants.CSAFE_GETCADENCE_CMD,
+            CsafeConstants.CSAFE_GETHRCUR_CMD,
+            CsafeConstants.CSAFE_PM_WRAPPER,
+            0x04.toByte(), // wrapper byte count = 4 (A0, A3, BF, C1)
+            CsafeConstants.CSAFE_PM_GET_WORKTIME,
+            CsafeConstants.CSAFE_PM_GET_WORKDISTANCE,
+            CsafeConstants.CSAFE_PM_GET_STROKESTATE,
+            CsafeConstants.CSAFE_PM_GET_DRAGFACTOR
+        )
     }
 }

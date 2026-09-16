@@ -220,11 +220,13 @@ class UsbTransport(private val context: Context) {
      * Sends a CSAFE command to the PM5 and awaits the unescaped response payload.
      *
      * @param commandBytes Unescaped CSAFE command payload.
+     * @param maxResponseBytes Expected maximum response size to guide report selection.
      * @param timeoutMs Maximum milliseconds to wait for USB transfer.
      * @return Unescaped response payload, or null if communication failed.
      */
     suspend fun executeCsafeCommand(
         commandBytes: ByteArray,
+        maxResponseBytes: Int = 0,
         timeoutMs: Int = DEFAULT_TIMEOUT_MS
     ): ByteArray? = withContext(Dispatchers.IO) {
         ioMutex.withLock {
@@ -232,9 +234,9 @@ class UsbTransport(private val context: Context) {
             val epOut = endpointOut ?: return@withContext null
             val epIn = endpointIn ?: return@withContext null
 
-            val packedReport = CsafeProtocol.packFrame(commandBytes)
+            val packedReport = CsafeProtocol.packFrame(commandBytes, maxResponseBytes)
 
-            // Send 121-byte report to PM5 OUT endpoint
+            // Send report to PM5 OUT endpoint
             val bytesWritten = conn.bulkTransfer(epOut, packedReport, packedReport.size, timeoutMs)
             if (bytesWritten < 0) {
                 Log.w(TAG, "Failed writing to USB OUT endpoint: $bytesWritten")
@@ -242,7 +244,7 @@ class UsbTransport(private val context: Context) {
             }
 
             // Read response from PM5 IN endpoint
-            val readBuf = ByteArray(CsafeConstants.WRITE_BUF_SIZE)
+            val readBuf = ByteArray(CsafeConstants.REPORT_SIZE_LONG)
             val bytesRead = conn.bulkTransfer(epIn, readBuf, readBuf.size, timeoutMs)
             if (bytesRead <= 0) {
                 return@withContext null

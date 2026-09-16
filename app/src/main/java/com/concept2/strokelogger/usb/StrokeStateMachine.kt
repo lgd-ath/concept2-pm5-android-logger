@@ -43,7 +43,7 @@ class StrokeStateMachine(
 ) {
     companion object {
         private const val TAG = "StrokeStateMachine"
-        private const val POLLING_INTERVAL_MS = 28L // ~35 Hz polling
+        private const val POLLING_INTERVAL_MS = 60L // ~16.6 Hz polling (Concept2 PM5 safe pacing)
     }
 
     private var pollingJob: Job? = null
@@ -99,9 +99,9 @@ class StrokeStateMachine(
      * and streams force curve data when drive finishes.
      */
     private suspend fun pollIteration() {
-        // 1. Query combined telemetry & stroke state
+        // 1. Query combined telemetry & stroke state (expected response size ~35 bytes -> Report ID 0x04)
         val cmd = CsafeProtocol.buildCombinedTelemetryCommand()
-        val response = transport.executeCsafeCommand(cmd) ?: return
+        val response = transport.executeCsafeCommand(cmd, maxResponseBytes = 40) ?: return
 
         val parsed = parseCombinedResponse(response)
         val currentState = parsed.strokeState
@@ -190,7 +190,7 @@ class StrokeStateMachine(
         while (attempts < maxAttempts) {
             attempts++
             val cmd = CsafeProtocol.buildForcePlotCommand(32)
-            val response = transport.executeCsafeCommand(cmd) ?: break
+            val response = transport.executeCsafeCommand(cmd, maxResponseBytes = 100) ?: break
 
             val chunk = parseForcePlotResponse(response)
             if (chunk.isEmpty()) {
@@ -207,19 +207,21 @@ class StrokeStateMachine(
 
     /**
      * Unpacks 16-bit little-endian force sample integers from PM5 force plot response.
+     * Response payload structure:
+     * [Status, WRAPPER(0x1A), wrapperLen, 0x6B, subcmdLen, bytesReturned, d0_lo, d0_hi, ...]
      */
     private fun parseForcePlotResponse(payload: ByteArray): List<Int> {
         val points = mutableListOf<Int>()
-        // Format: [WRAPPER(0x1A), len, 0x6B, count_bytes, d0_lo, d0_hi, d1_lo, d1_hi, ...]
         var idx = 0
-        while (idx < payload.size - 3) {
+        while (idx < payload.size - 5) {
             val byteVal = payload[idx].toInt() and 0xFF
-            if (byteVal == (CsafeConstants.CSAFE_PM_WRAPPER.toInt() and 0xFF) && (payload[idx + 2].toInt() and 0xFF) == (CsafeConstants.CSAFE_PM_GET_FORCEPLOTDATA.toInt() and 0xFF)) {
-                val dataLen = payload[idx + 1].toInt() and 0xFF
-                val bytesReturned = payload[idx + 3].toInt() and 0xFF
-                var dataIdx = idx + 4
-                val endData = dataIdx + bytesReturned
-                while (dataIdx + 1 < endData && dataIdx + 1 < payload.size) {
+            if (byteVal == (CsafeConstants.CSAFE_PM_WRAPPER.toInt() and 0xFF)
+                && (payload[idx + 2].toInt() and 0xFF) == (CsafeConstants.CSAFE_PM_GET_FORCEPLOTDATA.toInt() and 0xFF)
+            ) {
+                val bytesReturned = payload[idx + 4].toInt() and 0xFF
+                var dataIdx = idx + 5
+                val endData = (dataIdx + bytesReturned).coerceAtMost(payload.size)
+                while (dataIdx + 1 < endData) {
                     val lo = payload[dataIdx].toInt() and 0xFF
                     val hi = payload[dataIdx + 1].toInt() and 0xFF
                     val forceVal = (hi shl 8) or lo
@@ -245,88 +247,87 @@ class StrokeStateMachine(
         var workDistMeters = 0.0
         var drag = 0
 
-        var i = 0
+        // payload[0] is the CSAFE Status byte (e.g. 1 = Ready, 5 = InUse)
+        var i = 1
         while (i < payload.size) {
             val cmd = payload[i].toInt() and 0xFF
+            val byteCount = if (i + 1 < payload.size) (payload[i + 1].toInt() and 0xFF) else 0
+
             when (cmd) {
                 CsafeConstants.CSAFE_GETPOWER_CMD.toInt() and 0xFF -> {
-                    // [0xB4, 2, watts_lo, watts_hi]
+                    // [0xB4, byteCount, watts_lo, watts_hi, units]
                     if (i + 3 < payload.size) {
                         val lo = payload[i + 2].toInt() and 0xFF
                         val hi = payload[i + 3].toInt() and 0xFF
                         watts = (hi shl 8) or lo
-                        i += 4
-                        continue
                     }
+                    i += 2 + byteCount
                 }
                 CsafeConstants.CSAFE_GETCADENCE_CMD.toInt() and 0xFF -> {
-                    // [0xA7, 2, spm_lo, spm_hi]
-                    if (i + 3 < payload.size) {
-                        val lo = payload[i + 2].toInt() and 0xFF
-                        val hi = payload[i + 3].toInt() and 0xFF
-                        spm = (hi shl 8) or lo
-                        i += 4
-                        continue
+                    // [0xA7, byteCount, spm_lo, ...]
+                    if (i + 2 < payload.size) {
+                        spm = payload[i + 2].toInt() and 0xFF
                     }
+                    i += 2 + byteCount
                 }
                 CsafeConstants.CSAFE_GETHRCUR_CMD.toInt() and 0xFF -> {
-                    // [0xB0, 1, hr]
+                    // [0xB0, byteCount, hr]
                     if (i + 2 < payload.size) {
                         hr = payload[i + 2].toInt() and 0xFF
-                        i += 3
-                        continue
                     }
+                    i += 2 + byteCount
                 }
                 CsafeConstants.CSAFE_PM_WRAPPER.toInt() and 0xFF -> {
-                    // PM Proprietary command
-                    if (i + 2 < payload.size) {
-                        val propCmd = payload[i + 2].toInt() and 0xFF
-                        when (propCmd) {
+                    // PM Proprietary wrapper: [0x1A, wrapperLen, subcmd1, sublen1, data1..., subcmd2, ...]
+                    val wrapperLen = byteCount
+                    val wrapEnd = (i + 2 + wrapperLen).coerceAtMost(payload.size)
+                    var k = i + 2
+                    while (k + 1 < wrapEnd) {
+                        val subCmd = payload[k].toInt() and 0xFF
+                        val subLen = payload[k + 1].toInt() and 0xFF
+                        val dataIdx = k + 2
+                        when (subCmd) {
                             CsafeConstants.CSAFE_PM_GET_STROKESTATE.toInt() and 0xFF -> {
-                                if (i + 3 < payload.size) {
-                                    state = payload[i + 3].toInt() and 0xFF
-                                    i += 4
-                                    continue
-                                }
-                            }
-                            CsafeConstants.CSAFE_PM_GET_WORKTIME.toInt() and 0xFF -> {
-                                if (i + 7 < payload.size) {
-                                    val b0 = payload[i + 3].toLong() and 0xFF
-                                    val b1 = payload[i + 4].toLong() and 0xFF
-                                    val b2 = payload[i + 5].toLong() and 0xFF
-                                    val b3 = payload[i + 6].toLong() and 0xFF
-                                    val frac = payload[i + 7].toLong() and 0xFF
-                                    val centisecs = (b0 or (b1 shl 8) or (b2 shl 16) or (b3 shl 24))
-                                    workTimeMs = (centisecs * 10) + (frac)
-                                    i += 8
-                                    continue
-                                }
-                            }
-                            CsafeConstants.CSAFE_PM_GET_WORKDISTANCE.toInt() and 0xFF -> {
-                                if (i + 7 < payload.size) {
-                                    val b0 = payload[i + 3].toLong() and 0xFF
-                                    val b1 = payload[i + 4].toLong() and 0xFF
-                                    val b2 = payload[i + 5].toLong() and 0xFF
-                                    val b3 = payload[i + 6].toLong() and 0xFF
-                                    val frac = payload[i + 7].toLong() and 0xFF
-                                    val decimeters = (b0 or (b1 shl 8) or (b2 shl 16) or (b3 shl 24))
-                                    workDistMeters = (decimeters * 0.1) + (frac * 0.01)
-                                    i += 8
-                                    continue
+                                if (dataIdx < wrapEnd) {
+                                    state = payload[dataIdx].toInt() and 0xFF
                                 }
                             }
                             CsafeConstants.CSAFE_PM_GET_DRAGFACTOR.toInt() and 0xFF -> {
-                                if (i + 3 < payload.size) {
-                                    drag = payload[i + 3].toInt() and 0xFF
-                                    i += 4
-                                    continue
+                                if (dataIdx < wrapEnd) {
+                                    drag = payload[dataIdx].toInt() and 0xFF
+                                }
+                            }
+                            CsafeConstants.CSAFE_PM_GET_WORKTIME.toInt() and 0xFF -> {
+                                if (dataIdx + 3 < wrapEnd) {
+                                    val b0 = payload[dataIdx].toLong() and 0xFF
+                                    val b1 = payload[dataIdx + 1].toLong() and 0xFF
+                                    val b2 = payload[dataIdx + 2].toLong() and 0xFF
+                                    val b3 = payload[dataIdx + 3].toLong() and 0xFF
+                                    val frac = if (dataIdx + 4 < wrapEnd) (payload[dataIdx + 4].toLong() and 0xFF) else 0L
+                                    val centisecs = (b0 or (b1 shl 8) or (b2 shl 16) or (b3 shl 24))
+                                    workTimeMs = (centisecs * 10L) + frac
+                                }
+                            }
+                            CsafeConstants.CSAFE_PM_GET_WORKDISTANCE.toInt() and 0xFF -> {
+                                if (dataIdx + 3 < wrapEnd) {
+                                    val b0 = payload[dataIdx].toLong() and 0xFF
+                                    val b1 = payload[dataIdx + 1].toLong() and 0xFF
+                                    val b2 = payload[dataIdx + 2].toLong() and 0xFF
+                                    val b3 = payload[dataIdx + 3].toLong() and 0xFF
+                                    val frac = if (dataIdx + 4 < wrapEnd) (payload[dataIdx + 4].toInt() and 0xFF) else 0
+                                    val decimeters = (b0 or (b1 shl 8) or (b2 shl 16) or (b3 shl 24))
+                                    workDistMeters = (decimeters / 10.0) + (frac / 100.0)
                                 }
                             }
                         }
+                        k += 2 + subLen
                     }
+                    i = wrapEnd
+                }
+                else -> {
+                    i += 2 + byteCount
                 }
             }
-            i++
         }
 
         return ParsedTelemetry(
