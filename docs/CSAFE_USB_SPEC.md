@@ -86,20 +86,26 @@ Frame Payload (9 bytes total):
    0xC1]                     <-- Drag Factor
 ```
 
-### 4.1 Timing & Pacing Guardrails
-* **Polling Interval**: Set to **60ms** (~16.6 Hz).
-* Concept2 PM5 monitors require at least 50ms between requests (`MIN_FRAME_GAP = 50ms`). Polling faster than 50ms or sending invalid trailing bytes overflows the PM5 input buffer and triggers hardware fault `Code 384-1`.
-* Clearing `Code 384-1`: Simply press the physical button next to **Continue** on the PM5 display.
+### 4.1 Two-Tier Polling Architecture (ErgometerJS Parity)
+To guarantee 100% parity with the working `stroke-by-stroke-analyzer` (which runs `ErgometerJS v0.8` by Tijmen van Gulik):
+* **Fixed 121-Byte Report ID 0x02 Framing**: All HID commands sent over physical USB are packed into 121 bytes with Report ID `0x02` (`WRITE_BUF_SIZE = 121`, `REPORT_TYPE = 2`), padded with zeroes after `FRAME_END (0xF2)`.
+* **High-Resolution Stroke State Tier**: During active rowing, the state machine issues the lightweight 6-byte query `[0xF1, 0x1A, 0x01, 0xBF, 0xA4, 0xF2]` every **35ms** (~28.5 Hz) without querying full telemetry.
+* **Low-Resolution Telemetry Tier**: Polled every **250ms** during steady rowing or immediately upon stroke completion to update UI display metrics (Watts, SPM, HR, Time, Distance).
+* **Idle Pacing**: When `strokeState == WAITING` (wheel stationary), the loop backs off to **400ms** to minimize battery and CPU usage.
 
 ---
 
-## 5. Force Plot Decoding Formula
+## 5. Force Plot Decoding Formula & Post-Processing
 
-When `CSAFE_PM_GET_FORCEPLOTDATA` (`[0x1A, 0x03, 0x6B, 0x01, 0x20]`) is sent:
-1. PM5 responds with Report ID `0x02` (121 bytes).
-2. The payload contains `[Status, 0x1A, wrapperLen, 0x6B, subcmdLen, bytesReturned, d0_lo, d0_hi, ...]`.
-3. `bytesReturned` indicates the number of data bytes in this chunk (up to 32 bytes = 16 points).
-4. Every pair of bytes represents a discrete 16-bit handle force sample in Newtons:
+When the stroke finishes (transition from `DRIVE` / `DWELL` to `RECOVERY`):
+1. The app requests `CSAFE_PM_GET_FORCEPLOTDATA` in 32-byte chunks: `[0xF1, 0x1A, 0x03, 0x6B, 0x01, 0x20, 0x53, 0xF2]`.
+2. PM5 responds with Report ID `0x02` (121 bytes).
+3. The payload contains `[Status, 0x1A, wrapperLen, 0x6B, subcmdLen, bytesReturned, d0_lo, d0_hi, ...]`.
+4. `bytesReturned` indicates the number of data bytes in this chunk (up to 32 bytes = 16 points).
+5. Every pair of bytes represents a discrete 16-bit handle force sample in Newtons:
    $$F_i = (B_{2i+1} \ll 8) \;|\; B_{2i}$$
-5. Chunks are collected until `bytesReturned < 32` or empty.
-6. The resulting vector is stored directly as `forceMap: [Int]`.
+6. Chunks are collected until `bytesReturned < 32` (or fewer than 16 points).
+7. **ErgometerJS Curve Trimming**: Trailing double zeroes are popped while preserving the single grounding point:
+   $$\text{while}(\text{len} > 3 \land F_{-1} = 0 \land F_{-2} = 0) \implies \text{pop}()$$
+8. Stored directly as `forceMap: [Int]` if $\text{len} \ge 4$.
+

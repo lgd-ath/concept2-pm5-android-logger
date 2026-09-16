@@ -11,15 +11,20 @@ object CsafeProtocol {
     /**
      * Encapsulates raw CSAFE command bytes into a complete USB HID output report.
      * Selects the proper Concept2 HID Report ID and buffer length:
-     * - Report ID 0x01 (21 bytes) for short commands (max response <= 21)
-     * - Report ID 0x04 (63 bytes) for standard telemetry (max response <= 63)
-     * - Report ID 0x02 (121 bytes) for large transfers like force plots
+     * - Report ID 0x01 (21 bytes) for short commands (when forceLongReport is false)
+     * - Report ID 0x04 (63 bytes) for standard telemetry (when forceLongReport is false)
+     * - Report ID 0x02 (121 bytes) for standard ErgometerJS / WebHID transfers (default in USB transport)
      *
      * @param commandBytes Array of raw CSAFE command bytes.
      * @param maxResponseBytes Expected maximum response size to guide report selection.
+     * @param forceLongReport When true (ErgometerJS parity), uses fixed 121-byte Report ID 0x02.
      * @return Padded byte array ready to transmit to PM5 OUT endpoint.
      */
-    fun packFrame(commandBytes: ByteArray, maxResponseBytes: Int = 0): ByteArray {
+    fun packFrame(
+        commandBytes: ByteArray,
+        maxResponseBytes: Int = 0,
+        forceLongReport: Boolean = false
+    ): ByteArray {
         val frameStream = ByteArrayOutputStream()
         frameStream.write(CsafeConstants.FRAME_START_BYTE.toInt()) // 0xF1
 
@@ -50,11 +55,11 @@ object CsafeProtocol {
 
         val framed = frameStream.toByteArray()
         val totalLength = framed.size + 1 // +1 for Report ID byte
-        val maxLen = maxOf(totalLength, maxResponseBytes)
+        val maxLen = if (forceLongReport) CsafeConstants.REPORT_SIZE_LONG else maxOf(totalLength, maxResponseBytes)
 
         val (reportId, targetSize) = when {
-            maxLen <= CsafeConstants.REPORT_SIZE_SHORT -> Pair(CsafeConstants.REPORT_ID_SHORT, CsafeConstants.REPORT_SIZE_SHORT)
-            maxLen <= CsafeConstants.REPORT_SIZE_MEDIUM -> Pair(CsafeConstants.REPORT_ID_MEDIUM, CsafeConstants.REPORT_SIZE_MEDIUM)
+            !forceLongReport && maxLen <= CsafeConstants.REPORT_SIZE_SHORT -> Pair(CsafeConstants.REPORT_ID_SHORT, CsafeConstants.REPORT_SIZE_SHORT)
+            !forceLongReport && maxLen <= CsafeConstants.REPORT_SIZE_MEDIUM -> Pair(CsafeConstants.REPORT_ID_MEDIUM, CsafeConstants.REPORT_SIZE_MEDIUM)
             else -> Pair(CsafeConstants.REPORT_ID_LONG, CsafeConstants.REPORT_SIZE_LONG)
         }
 
@@ -183,5 +188,80 @@ object CsafeProtocol {
             CsafeConstants.CSAFE_PM_GET_STROKESTATE,
             CsafeConstants.CSAFE_PM_GET_DRAGFACTOR
         )
+    }
+
+    /**
+     * Parses the stroke state byte from a PM5 response payload.
+     * Supports both standalone getStrokeState responses and compound responses.
+     */
+    fun parseStrokeStateResponse(payload: ByteArray): Int {
+        if (payload.size < 4) return CsafeConstants.STROKE_STATE_WAITING
+        var i = 1 // Skip status byte
+        while (i < payload.size) {
+            val cmd = payload[i].toInt() and 0xFF
+            val byteCount = if (i + 1 < payload.size) (payload[i + 1].toInt() and 0xFF) else 0
+
+            if (cmd == (CsafeConstants.CSAFE_PM_WRAPPER.toInt() and 0xFF)) {
+                val wrapEnd = minOf(i + 2 + byteCount, payload.size)
+                var k = i + 2
+                while (k + 1 < wrapEnd) {
+                    val subCmd = payload[k].toInt() and 0xFF
+                    val subLen = payload[k + 1].toInt() and 0xFF
+                    val dataIdx = k + 2
+                    if (subCmd == (CsafeConstants.CSAFE_PM_GET_STROKESTATE.toInt() and 0xFF)) {
+                        if (dataIdx < wrapEnd) {
+                            return payload[dataIdx].toInt() and 0xFF
+                        }
+                    }
+                    k += 2 + subLen
+                }
+                i = wrapEnd
+            } else {
+                i += 2 + byteCount
+            }
+        }
+        return CsafeConstants.STROKE_STATE_WAITING
+    }
+
+    /**
+     * Parses force curve plot samples from a PM5 CSAFE_PM_GET_FORCEPLOTDATA response payload.
+     * Extracts 16-bit little-endian Newtons samples.
+     */
+    fun parseForcePlotResponse(payload: ByteArray): List<Int> {
+        val points = mutableListOf<Int>()
+        var i = 1 // Skip status byte
+        while (i < payload.size) {
+            val cmd = payload[i].toInt() and 0xFF
+            val byteCount = if (i + 1 < payload.size) (payload[i + 1].toInt() and 0xFF) else 0
+
+            if (cmd == (CsafeConstants.CSAFE_PM_WRAPPER.toInt() and 0xFF)) {
+                val wrapEnd = minOf(i + 2 + byteCount, payload.size)
+                var k = i + 2
+                while (k + 1 < wrapEnd) {
+                    val subCmd = payload[k].toInt() and 0xFF
+                    val subLen = payload[k + 1].toInt() and 0xFF
+                    val dataIdx = k + 2
+                    if (subCmd == (CsafeConstants.CSAFE_PM_GET_FORCEPLOTDATA.toInt() and 0xFF)) {
+                        if (dataIdx < wrapEnd) {
+                            val bytesReturned = payload[dataIdx].toInt() and 0xFF
+                            var p = dataIdx + 1
+                            val endP = minOf(dataIdx + 1 + bytesReturned, wrapEnd)
+                            while (p + 1 < endP) {
+                                val lo = payload[p].toInt() and 0xFF
+                                val hi = payload[p + 1].toInt() and 0xFF
+                                val point = (hi shl 8) or lo
+                                points.add(point)
+                                p += 2
+                            }
+                        }
+                    }
+                    k += 2 + subLen
+                }
+                i = wrapEnd
+            } else {
+                i += 2 + byteCount
+            }
+        }
+        return points
     }
 }

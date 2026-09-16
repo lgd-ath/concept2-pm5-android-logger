@@ -43,10 +43,13 @@ class StrokeStateMachine(
 ) {
     companion object {
         private const val TAG = "StrokeStateMachine"
-        private const val POLLING_INTERVAL_MS = 60L // ~16.6 Hz polling (Concept2 PM5 safe pacing)
+        private const val ACTIVE_POLLING_INTERVAL_MS = 35L  // ~28.5 Hz during active rowing (ErgometerJS parity)
+        private const val IDLE_POLLING_INTERVAL_MS = 400L   // 2.5 Hz when waiting for wheel speed
+        private const val TELEMETRY_REFRESH_INTERVAL_MS = 250L // Refresh display telemetry every 250ms
     }
 
     private var pollingJob: Job? = null
+    private var lastTelemetryUpdateMs = 0L
 
     private val _liveMetrics = MutableStateFlow(LiveMetrics())
     val liveMetrics: StateFlow<LiveMetrics> = _liveMetrics.asStateFlow()
@@ -68,14 +71,20 @@ class StrokeStateMachine(
         currentSession = session
         strokeIndex = session.strokes.size
         lastStrokeState = CsafeConstants.STROKE_STATE_WAITING
+        lastTelemetryUpdateMs = 0L
 
         pollingJob?.cancel()
         pollingJob = scope.launch(Dispatchers.IO) {
-            Log.i(TAG, "Starting PM5 high-frequency polling loop")
+            Log.i(TAG, "Starting PM5 ErgometerJS-aligned polling loop")
             while (isActive && transport.isConnected) {
                 try {
                     pollIteration()
-                    delay(POLLING_INTERVAL_MS)
+                    val delayMs = if (lastStrokeState == CsafeConstants.STROKE_STATE_WAITING) {
+                        IDLE_POLLING_INTERVAL_MS
+                    } else {
+                        ACTIVE_POLLING_INTERVAL_MS
+                    }
+                    delay(delayMs)
                 } catch (e: CancellationException) {
                     break
                 } catch (e: Exception) {
@@ -95,144 +104,158 @@ class StrokeStateMachine(
     }
 
     /**
-     * Single polling tick: queries state, detects drive -> recovery transitions,
-     * and streams force curve data when drive finishes.
+     * Single polling tick: queries stroke state (lightweight 6-byte query),
+     * refreshes telemetry periodically (every 250ms), and retrieves full force
+     * plot data upon drive completion.
      */
     private suspend fun pollIteration() {
-        // 1. Query combined telemetry & stroke state (expected response size ~35 bytes -> Report ID 0x04)
-        val cmd = CsafeProtocol.buildCombinedTelemetryCommand()
-        val response = transport.executeCsafeCommand(cmd, maxResponseBytes = 40) ?: return
-
-        val parsed = parseCombinedResponse(response)
-        val currentState = parsed.strokeState
         val now = System.currentTimeMillis()
 
-        // 2. State transition handling
+        // 1. Query Stroke State (ErgometerJS high-resolution update)
+        val strokeStateCmd = CsafeProtocol.buildStrokeStateCommand()
+        val stateResponse = transport.executeCsafeCommand(strokeStateCmd)
+        val currentState = if (stateResponse != null) {
+            CsafeProtocol.parseStrokeStateResponse(stateResponse)
+        } else {
+            lastStrokeState
+        }
+
+        var doStrokeCompletion = false
+
+        // 2. State transition detection (ErgometerJS parity)
         if (lastStrokeState != currentState) {
             if (currentState == CsafeConstants.STROKE_STATE_DRIVE) {
                 // Catch detected -> Drive phase beginning
                 strokeDriveStartMs = now
             } else if ((lastStrokeState == CsafeConstants.STROKE_STATE_DRIVE || lastStrokeState == CsafeConstants.STROKE_STATE_DWELL)
-                && currentState == CsafeConstants.STROKE_STATE_RECOVERY
+                && (currentState == CsafeConstants.STROKE_STATE_RECOVERY || currentState == CsafeConstants.STROKE_STATE_WAITING)
             ) {
                 // Drive finished -> Transitioned to recovery!
                 strokeDriveEndMs = now
-                val measuredDriveMs = (strokeDriveEndMs - strokeDriveStartMs).toInt().coerceIn(200, 2000)
-
-                // 3. Immediately query the complete discrete force curve vector
-                val forcePoints = fetchForcePlotData()
-
-                // Only log valid strokes with meaningful force points (>3 points)
-                if (forcePoints.size >= 4) {
-                    strokeIndex++
-                    val recovMs = if (lastStrokeTimestamp > 0) {
-                        (strokeDriveStartMs - lastStrokeTimestamp - measuredDriveMs).toInt().coerceIn(400, 6000)
-                    } else 1800
-                    lastStrokeTimestamp = strokeDriveStartMs
-
-                    val driveMs = if (forcePoints.isNotEmpty()) {
-                        // Concept2 samples force plot at ~5ms intervals
-                        val estDriveFromPoints = forcePoints.size * 5
-                        if (measuredDriveMs in 300..1500) measuredDriveMs else estDriveFromPoints
-                    } else measuredDriveMs
-
-                    val stroke = Stroke(
-                        n = strokeIndex,
-                        ts = now,
-                        tsMs = parsed.workTimeMs,
-                        watts = parsed.watts,
-                        spm = parsed.spm,
-                        driveMs = driveMs,
-                        recovMs = recovMs,
-                        drag = parsed.dragFactor.coerceAtLeast(100),
-                        forceMap = forcePoints,
-                        heartRate = parsed.heartRate,
-                        distanceMeters = parsed.workDistanceMeters
-                    )
-
-                    currentSession?.strokes?.add(stroke)
-                    currentSession?.totalMeters = stroke.distanceMeters
-                    currentSession?.dragFactor = stroke.drag
-
-                    _strokeFlow.emit(stroke)
-
-                    // Update UI live metrics with latest stroke curve
-                    _liveMetrics.value = _liveMetrics.value.copy(
-                        lastForceCurve = forcePoints,
-                        strokeCount = strokeIndex
-                    )
-                }
+                doStrokeCompletion = true
             }
             lastStrokeState = currentState
         }
 
-        // 4. Update real-time live metrics
-        _liveMetrics.value = _liveMetrics.value.copy(
-            watts = parsed.watts,
-            spm = parsed.spm,
-            heartRate = parsed.heartRate,
-            distanceMeters = parsed.workDistanceMeters,
-            elapsedSeconds = parsed.workTimeMs / 1000,
-            dragFactor = parsed.dragFactor,
-            strokeState = currentState
-        )
+        // 3. Low-resolution telemetry query (periodically or upon stroke finish)
+        val shouldFetchTelemetry = doStrokeCompletion ||
+            (lastTelemetryUpdateMs == 0L) ||
+            (now - lastTelemetryUpdateMs >= TELEMETRY_REFRESH_INTERVAL_MS)
+
+        var telemetry: ParsedTelemetry? = null
+        if (shouldFetchTelemetry) {
+            val telemCmd = CsafeProtocol.buildCombinedTelemetryCommand()
+            val telemResponse = transport.executeCsafeCommand(telemCmd)
+            if (telemResponse != null) {
+                telemetry = parseCombinedResponse(telemResponse)
+                lastTelemetryUpdateMs = now
+            }
+        }
+
+        // 4. Handle stroke completion
+        if (doStrokeCompletion) {
+            val telem = telemetry ?: run {
+                val telemCmd = CsafeProtocol.buildCombinedTelemetryCommand()
+                transport.executeCsafeCommand(telemCmd)?.let { parseCombinedResponse(it) }
+            }
+
+            // Fetch force plot curve points (32-byte chunks from PM5)
+            val forcePoints = fetchForcePlotData()
+
+            // ErgometerJS criteria: curve.size >= 4 points
+            if (forcePoints.size >= 4 && telem != null) {
+                strokeIndex++
+                val measuredDriveMs = (strokeDriveEndMs - strokeDriveStartMs).toInt().coerceIn(200, 2500)
+                val recovMs = if (lastStrokeTimestamp > 0) {
+                    (strokeDriveStartMs - lastStrokeTimestamp - measuredDriveMs).toInt().coerceIn(400, 6000)
+                } else 1800
+                lastStrokeTimestamp = strokeDriveStartMs
+
+                // Concept2 PM5 samples force at ~5ms intervals (or 200 Hz)
+                val estDriveFromPoints = forcePoints.size * 5
+                val driveMs = if (measuredDriveMs in 300..1800) measuredDriveMs else estDriveFromPoints
+
+                val stroke = Stroke(
+                    n = strokeIndex,
+                    ts = now,
+                    tsMs = telem.workTimeMs,
+                    watts = telem.watts,
+                    spm = telem.spm,
+                    driveMs = driveMs,
+                    recovMs = recovMs,
+                    drag = telem.dragFactor.coerceAtLeast(100),
+                    forceMap = forcePoints,
+                    heartRate = telem.heartRate,
+                    distanceMeters = telem.workDistanceMeters
+                )
+
+                currentSession?.strokes?.add(stroke)
+                currentSession?.totalMeters = stroke.distanceMeters
+                currentSession?.dragFactor = stroke.drag
+
+                _strokeFlow.emit(stroke)
+
+                // Update UI live metrics with latest stroke curve
+                _liveMetrics.value = _liveMetrics.value.copy(
+                    lastForceCurve = forcePoints,
+                    strokeCount = strokeIndex
+                )
+            }
+        }
+
+        // 5. Update real-time live display metrics
+        if (telemetry != null) {
+            _liveMetrics.value = _liveMetrics.value.copy(
+                watts = telemetry.watts,
+                spm = telemetry.spm,
+                heartRate = telemetry.heartRate,
+                distanceMeters = telemetry.workDistanceMeters,
+                elapsedSeconds = telemetry.workTimeMs / 1000,
+                dragFactor = telemetry.dragFactor,
+                strokeState = currentState
+            )
+        } else {
+            _liveMetrics.value = _liveMetrics.value.copy(
+                strokeState = currentState
+            )
+        }
     }
 
     /**
      * Queries PM5 repeatedly using CSAFE_PM_GET_FORCEPLOTDATA until all 16-bit
      * force samples of the completed drive phase are retrieved.
+     * Implements ErgometerJS multi-chunk protocol and trailing zeroes trimming.
      */
     private suspend fun fetchForcePlotData(): List<Int> {
-        val forceMap = mutableListOf<Int>()
-        var attempts = 0
-        val maxAttempts = 12 // A typical drive yields 30-70 points (2-5 packets)
+        val accumulator = mutableListOf<Int>()
+        var keepReading = true
+        var chunksRead = 0
+        val maxChunks = 16 // Safety limit: typical drive is 30-70 points (2-5 packets)
 
-        while (attempts < maxAttempts) {
-            attempts++
+        while (keepReading && chunksRead < maxChunks) {
             val cmd = CsafeProtocol.buildForcePlotCommand(32)
-            val response = transport.executeCsafeCommand(cmd, maxResponseBytes = 100) ?: break
+            val response = transport.executeCsafeCommand(cmd) ?: break
 
-            val chunk = parseForcePlotResponse(response)
+            val chunk = CsafeProtocol.parseForcePlotResponse(response)
             if (chunk.isEmpty()) {
-                break // No more points returned by PM5
-            }
-            forceMap.addAll(chunk)
-            if (chunk.size < 16) {
-                // If fewer than 16 points (32 bytes) returned, that was the final chunk
                 break
             }
-        }
-        return forceMap
-    }
+            accumulator.addAll(chunk)
+            chunksRead++
 
-    /**
-     * Unpacks 16-bit little-endian force sample integers from PM5 force plot response.
-     * Response payload structure:
-     * [Status, WRAPPER(0x1A), wrapperLen, 0x6B, subcmdLen, bytesReturned, d0_lo, d0_hi, ...]
-     */
-    private fun parseForcePlotResponse(payload: ByteArray): List<Int> {
-        val points = mutableListOf<Int>()
-        var idx = 0
-        while (idx < payload.size - 5) {
-            val byteVal = payload[idx].toInt() and 0xFF
-            if (byteVal == (CsafeConstants.CSAFE_PM_WRAPPER.toInt() and 0xFF)
-                && (payload[idx + 2].toInt() and 0xFF) == (CsafeConstants.CSAFE_PM_GET_FORCEPLOTDATA.toInt() and 0xFF)
-            ) {
-                val bytesReturned = payload[idx + 4].toInt() and 0xFF
-                var dataIdx = idx + 5
-                val endData = (dataIdx + bytesReturned).coerceAtMost(payload.size)
-                while (dataIdx + 1 < endData) {
-                    val lo = payload[dataIdx].toInt() and 0xFF
-                    val hi = payload[dataIdx + 1].toInt() and 0xFF
-                    val forceVal = (hi shl 8) or lo
-                    points.add(forceVal)
-                    dataIdx += 2
-                }
-                break
+            // In ErgometerJS: if 32 <= bytesReturned (16 points), query next chunk; else finished
+            if (chunk.size < 16) {
+                keepReading = false
             }
-            idx++
         }
-        return points
+
+        // ErgometerJS curve trimming rule:
+        // while (3 < curve.length && 0 === curve[curve.length - 1] && 0 === curve[curve.length - 2]) { curve.pop(); }
+        while (accumulator.size > 3 && accumulator.last() == 0 && accumulator[accumulator.size - 2] == 0) {
+            accumulator.removeAt(accumulator.size - 1)
+        }
+
+        return accumulator
     }
 
     /**

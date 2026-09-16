@@ -227,14 +227,15 @@ class UsbTransport(private val context: Context) {
     suspend fun executeCsafeCommand(
         commandBytes: ByteArray,
         maxResponseBytes: Int = 0,
-        timeoutMs: Int = DEFAULT_TIMEOUT_MS
+        timeoutMs: Int = DEFAULT_TIMEOUT_MS,
+        forceLongReport: Boolean = true // ErgometerJS parity: 121-byte Report ID 0x02
     ): ByteArray? = withContext(Dispatchers.IO) {
         ioMutex.withLock {
             val conn = usbConnection ?: return@withContext null
             val epOut = endpointOut ?: return@withContext null
             val epIn = endpointIn ?: return@withContext null
 
-            val packedReport = CsafeProtocol.packFrame(commandBytes, maxResponseBytes)
+            val packedReport = CsafeProtocol.packFrame(commandBytes, maxResponseBytes, forceLongReport)
 
             // Send report to PM5 OUT endpoint
             val bytesWritten = conn.bulkTransfer(epOut, packedReport, packedReport.size, timeoutMs)

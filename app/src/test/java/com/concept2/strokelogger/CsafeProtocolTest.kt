@@ -87,4 +87,53 @@ class CsafeProtocolTest {
         assertEquals(CsafeConstants.CSAFE_PM_WRAPPER, combinedCmd[3])
         assertEquals(4.toByte(), combinedCmd[4])
     }
+
+    @Test
+    fun testPackFrameErgometerJsParity() {
+        // ErgometerJS requires Report ID 0x02 and 121 bytes buffer
+        val strokeCmd = CsafeProtocol.buildStrokeStateCommand()
+        val packed = CsafeProtocol.packFrame(strokeCmd, forceLongReport = true)
+        assertEquals(121, packed.size)
+        assertEquals(0x02.toByte(), packed[0])
+        assertEquals(CsafeConstants.FRAME_START_BYTE, packed[1]) // 0xF1
+        assertEquals(CsafeConstants.CSAFE_PM_WRAPPER, packed[2]) // 0x1A
+        assertEquals(1.toByte(), packed[3])
+        assertEquals(CsafeConstants.CSAFE_PM_GET_STROKESTATE, packed[4]) // 0xBF
+        assertEquals(0xA4.toByte(), packed[5]) // XOR checksum (1A ^ 01 ^ BF = A4)
+        assertEquals(CsafeConstants.FRAME_END_BYTE, packed[6]) // 0xF2
+        // All trailing bytes up to index 120 must be zero
+        for (i in 7 until 121) {
+            assertEquals(0.toByte(), packed[i])
+        }
+    }
+
+    @Test
+    fun testParseStrokeStateResponse() {
+        // [status: 0x81, 0x1A, wrapLen: 0x03, 0xBF, subLen: 0x01, state: 0x02]
+        val payload = byteArrayOf(0x81.toByte(), 0x1A, 0x03, 0xBF.toByte(), 0x01, 0x02)
+        val state = CsafeProtocol.parseStrokeStateResponse(payload)
+        assertEquals(CsafeConstants.STROKE_STATE_DRIVE, state)
+    }
+
+    @Test
+    fun testParseForcePlotResponse() {
+        // 2 force points: 150 (0x0096) and 350 (0x015E)
+        // bytesReturned = 4
+        // subLen = 5
+        // wrapLen = 7
+        val payload = byteArrayOf(
+            0x81.toByte(), // status
+            0x1A,          // wrapper
+            0x07,          // wrapLen
+            0x6B,          // detailCmd (0x6B)
+            0x05,          // subLen
+            0x04,          // bytesReturned
+            0x96.toByte(), 0x00, // pt 1: 150
+            0x5E.toByte(), 0x01  // pt 2: 350
+        )
+        val points = CsafeProtocol.parseForcePlotResponse(payload)
+        assertEquals(2, points.size)
+        assertEquals(150, points[0])
+        assertEquals(350, points[1])
+    }
 }
