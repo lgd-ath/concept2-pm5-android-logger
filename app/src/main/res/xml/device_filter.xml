@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Concept2 Performance Monitor 5 (PM5) -->
+    <usb-device vendor-id="6052" product-id="3" />
+    <!-- Concept2 Performance Monitor 4 (PM4) -->
+    <usb-device vendor-id="6052" product-id="2" />
+    <!-- Concept2 Performance Monitor 3 (PM3) -->
+    <usb-device vendor-id="6052" product-id="1" />
+</resources>

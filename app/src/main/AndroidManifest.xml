@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- USB Host capability required to communicate with PM5 over USB-OTG -->
+    <uses-feature
+        android:name="android.hardware.usb.host"
+        android:required="true" />
+
+    <!-- Foreground service permissions for continuous stroke acquisition -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@android:drawable/ic_dialog_info"
+        android:label="@string/app_name"
+        android:roundIcon="@android:drawable/ic_dialog_info"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Concept2StrokeLogger">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Automatically prompt to launch app when Concept2 PM5 is connected via USB -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/device_filter" />
+        </activity>
+
+        <!-- Background service dedicated to uninterrupted USB telemetry logging -->
+        <service
+            android:name=".service.UsbForegroundService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- FileProvider for secure sharing of JSON and CSV files to Google Drive -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.concept2.strokelogger.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+    </application>
+
+</manifest>

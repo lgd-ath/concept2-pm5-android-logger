@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">PM5 Stroke Logger</string>
+    <string name="notification_channel_name">Concept2 PM5 Monitor</string>
+    <string name="notification_channel_desc">Active USB connection and stroke telemetry logging</string>
+    <string name="status_connected">Connected to PM5</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="status_connecting">Connecting to PM5…</string>
+</resources>
