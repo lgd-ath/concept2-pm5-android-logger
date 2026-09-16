@@ -112,6 +112,12 @@ object CsafeProtocol {
                 i += 2
             } else {
                 unescaped.write(b)
+                i++
+            }
+
+            // Memory guard: de-stuffed payload can never exceed raw incoming frame length
+            if (unescaped.size() > length) {
+                return null
             }
         }
 
@@ -213,11 +219,11 @@ object CsafeProtocol {
                             return payload[dataIdx].toInt() and 0xFF
                         }
                     }
-                    k += 2 + subLen
+                    k += maxOf(1, 2 + subLen)
                 }
-                i = wrapEnd
+                i = maxOf(i + 1, wrapEnd)
             } else {
-                i += 2 + byteCount
+                i += maxOf(1, 2 + byteCount)
             }
         }
         return CsafeConstants.STROKE_STATE_WAITING
@@ -255,11 +261,11 @@ object CsafeProtocol {
                             }
                         }
                     }
-                    k += 2 + subLen
+                    k += maxOf(1, 2 + subLen)
                 }
-                i = wrapEnd
+                i = maxOf(i + 1, wrapEnd)
             } else {
-                i += 2 + byteCount
+                i += maxOf(1, 2 + byteCount)
             }
         }
         return points

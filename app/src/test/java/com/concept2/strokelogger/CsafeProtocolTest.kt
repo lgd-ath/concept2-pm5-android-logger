@@ -136,4 +136,43 @@ class CsafeProtocolTest {
         assertEquals(150, points[0])
         assertEquals(350, points[1])
     }
+
+    @Test
+    fun testUnpackRealPm5ResponseWithoutOOM() {
+        // Realistic PM5 response: [ReportId: 0x02, Start: 0xF1, Status: 0x81, Wrapper: 0x1A, 0x03, 0xBF, 0x01, 0x02, Checksum: 0x24, End: 0xF2, 0x00...]
+        val raw = ByteArray(121)
+        raw[0] = 0x02.toByte()
+        raw[1] = CsafeConstants.FRAME_START_BYTE // 0xF1
+        raw[2] = 0x81.toByte()                  // Status
+        raw[3] = 0x1A                           // Wrapper
+        raw[4] = 0x03                           // Length
+        raw[5] = CsafeConstants.CSAFE_PM_GET_STROKESTATE // 0xBF
+        raw[6] = 0x01
+        raw[7] = 0x02                           // State = DRIVE
+        raw[8] = 0x24                           // Checksum
+        raw[9] = CsafeConstants.FRAME_END_BYTE   // 0xF2
+
+        val unpacked = CsafeProtocol.unpackFrame(raw, raw.size)
+        assertNotNull("Unpacked frame must not be null", unpacked)
+        assertEquals(6, unpacked!!.size)
+        assertEquals(0x81.toByte(), unpacked[0])
+        assertEquals(0x1A.toByte(), unpacked[1])
+        assertEquals(0x03.toByte(), unpacked[2])
+        assertEquals(0xBF.toByte(), unpacked[3])
+        assertEquals(0x01.toByte(), unpacked[4])
+        assertEquals(0x02.toByte(), unpacked[5])
+
+        // Verify that parseStrokeStateResponse correctly extracts DRIVE from this unpacked payload
+        val state = CsafeProtocol.parseStrokeStateResponse(unpacked)
+        assertEquals(CsafeConstants.STROKE_STATE_DRIVE, state)
+    }
+
+    @Test
+    fun testUnpackFrameMemorySafetyOnCorruptInput() {
+        // A corrupted frame where length is specified but no end byte exists
+        val corrupt = ByteArray(64) { 0x55.toByte() }
+        corrupt[0] = CsafeConstants.FRAME_START_BYTE
+        val res = CsafeProtocol.unpackFrame(corrupt, corrupt.size)
+        assertEquals(null, res)
+    }
 }
