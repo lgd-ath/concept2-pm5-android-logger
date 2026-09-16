@@ -159,7 +159,7 @@ class MainActivity : ComponentActivity() {
         // Triggered when Concept2 USB cable is attached while app is already open
         if (UsbManager.ACTION_USB_DEVICE_ATTACHED == intent.action) {
             lifecycleScope.launch {
-                val ok = usbService?.connectToDevice() ?: false
+                val ok = usbServiceState.value?.connectToDevice() ?: false
                 isConnectedState.value = ok
                 if (ok) {
                     Toast.makeText(this@MainActivity, "PM5 Connected via USB-OTG", Toast.LENGTH_SHORT).show()
