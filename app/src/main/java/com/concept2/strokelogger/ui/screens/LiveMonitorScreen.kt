@@ -109,6 +109,31 @@ fun LiveMonitorScreen(
 
         Spacer(modifier = Modifier.height(10.dp))
 
+        if (!isConnected) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(CarbonCard, RoundedCornerShape(10.dp))
+                    .padding(12.dp)
+            ) {
+                Column {
+                    Text(
+                        text = "📱 ${android.os.Build.MANUFACTURER.uppercase()} ${android.os.Build.MODEL} • Android ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})",
+                        color = AccentCyan,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "App initialized successfully. Connect your USB-OTG cable to the Concept2 PM5 monitor and tap Connect.",
+                        color = TextMuted,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+        }
+
         // ── Primary Athletic Gauges (Watts & SPM) ─────────────────────────────
         Row(
             modifier = Modifier.fillMaxWidth(),

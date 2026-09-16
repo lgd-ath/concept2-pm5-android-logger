@@ -65,6 +65,7 @@ class CrashHandler private constructor(private val context: Context) : Thread.Un
             }
             context.startActivity(crashIntent)
 
+            Thread.sleep(300)
             Process.killProcess(Process.myPid())
             exitProcess(10)
         } catch (e: Exception) {
