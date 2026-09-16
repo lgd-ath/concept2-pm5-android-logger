@@ -32,7 +32,7 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
-    private var usbService: UsbForegroundService? = null
+    private val usbServiceState = mutableStateOf<UsbForegroundService?>(null)
     private var isBound = false
 
     private val isConnectedState = mutableStateOf(false)
@@ -42,7 +42,7 @@ class MainActivity : ComponentActivity() {
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as UsbForegroundService.LocalBinder
-            usbService = binder.service
+            usbServiceState.value = binder.service
             isBound = true
             isConnectedState.value = binder.service.isConnected
             isRecordingState.value = binder.service.activeSession != null
@@ -55,7 +55,7 @@ class MainActivity : ComponentActivity() {
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            usbService = null
+            usbServiceState.value = null
             isBound = false
             isConnectedState.value = false
         }
@@ -77,14 +77,14 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Start and bind to UsbForegroundService
+        // Bind to UsbForegroundService (FGS starts only when workout is initiated)
         val serviceIntent = Intent(this, UsbForegroundService::class.java)
-        startService(serviceIntent)
         bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
 
         setContent {
             Concept2StrokeLoggerTheme {
-                val metrics = usbService?.liveMetrics?.collectAsState(initial = LiveMetrics())?.value
+                val service = usbServiceState.value
+                val metrics = service?.liveMetrics?.collectAsState(initial = LiveMetrics())?.value
                     ?: LiveMetrics()
 
                 var showExportDialog by remember { mutableStateOf(false) }
@@ -93,10 +93,10 @@ class MainActivity : ComponentActivity() {
                     isConnected = isConnectedState.value,
                     isRecording = isRecordingState.value,
                     metrics = metrics,
-                    activeSession = usbService?.activeSession,
+                    activeSession = service?.activeSession,
                     onConnectUsb = {
                         lifecycleScope.launch {
-                            val ok = usbService?.connectToDevice() ?: false
+                            val ok = usbServiceState.value?.connectToDevice() ?: false
                             isConnectedState.value = ok
                             if (!ok) {
                                 Toast.makeText(this@MainActivity, "PM5 not detected. Check USB-OTG cable.", Toast.LENGTH_SHORT).show()
@@ -104,14 +104,26 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onStartWorkout = {
-                        val session = usbService?.startRecording()
+                        try {
+                            val fgsIntent = Intent(this@MainActivity, UsbForegroundService::class.java).apply {
+                                action = UsbForegroundService.ACTION_START_RECORDING
+                            }
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                startForegroundService(fgsIntent)
+                            } else {
+                                startService(fgsIntent)
+                            }
+                        } catch (e: Throwable) {
+                            android.util.Log.w("MainActivity", "startForegroundService exception: ${e.message}")
+                        }
+                        val session = usbServiceState.value?.startRecording()
                         if (session != null) {
                             isRecordingState.value = true
                             Toast.makeText(this@MainActivity, "Workout started!", Toast.LENGTH_SHORT).show()
                         }
                     },
                     onFinishWorkout = {
-                        completedSession = usbService?.stopRecording()
+                        completedSession = usbServiceState.value?.stopRecording()
                         isRecordingState.value = false
                         showExportDialog = true
                     }

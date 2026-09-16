@@ -10,8 +10,11 @@ import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
 import android.os.PowerManager
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import com.concept2.strokelogger.MainActivity
 import com.concept2.strokelogger.R
 import com.concept2.strokelogger.data.model.WorkoutSession
@@ -85,18 +88,56 @@ class UsbForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notification = buildNotification(null)
-        startForeground(NOTIFICATION_ID, notification)
-
         when (intent?.action) {
-            ACTION_START_RECORDING -> startRecording()
-            ACTION_STOP_RECORDING -> stopRecording()
+            ACTION_START_RECORDING -> {
+                startForegroundSafely()
+                startRecording()
+            }
+            ACTION_STOP_RECORDING -> {
+                stopRecording()
+                stopForegroundSafely()
+            }
         }
-
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
+
+    /**
+     * Safely starts the foreground service with CONNECTED_DEVICE type
+     * without crashing if device/network permissions are still pending.
+     */
+    private fun startForegroundSafely() {
+        try {
+            val notification = buildNotification(null)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                } else {
+                    0
+                }
+                ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, fgsType)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            Log.i(TAG, "Successfully started foreground service")
+        } catch (e: Throwable) {
+            Log.w(TAG, "startForegroundSafely encountered non-fatal error, continuing in bound mode: ${e.message}")
+        }
+    }
+
+    private fun stopForegroundSafely() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "stopForegroundSafely non-fatal error: ${e.message}")
+        }
+    }
 
     /**
      * Attempts connection to an attached Concept2 PM5 monitor.
@@ -111,7 +152,12 @@ class UsbForegroundService : Service() {
      * Begins recording a new workout session.
      */
     fun startRecording(): WorkoutSession {
-        wakeLock?.acquire(3 * 60 * 60 * 1000L) // 3-hour safety timeout
+        startForegroundSafely()
+        try {
+            wakeLock?.acquire(3 * 60 * 60 * 1000L) // 3-hour safety timeout
+        } catch (e: Throwable) {
+            Log.w(TAG, "WakeLock acquire warning: ${e.message}")
+        }
 
         val session = WorkoutSession()
         currentSession = session
@@ -125,9 +171,14 @@ class UsbForegroundService : Service() {
      */
     fun stopRecording(): WorkoutSession? {
         stateMachine.stop()
-        if (wakeLock?.isHeld == true) {
-            wakeLock?.release()
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "WakeLock release warning: ${e.message}")
         }
+        stopForegroundSafely()
         val session = currentSession
         session?.endTime = System.currentTimeMillis()
         Log.i(TAG, "Stopped recording workout session: ${session?.id}, strokes: ${session?.strokeCount}")

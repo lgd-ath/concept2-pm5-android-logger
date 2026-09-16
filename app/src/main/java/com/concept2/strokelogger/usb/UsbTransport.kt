@@ -3,6 +3,7 @@ package com.concept2.strokelogger.usb
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
@@ -64,11 +65,19 @@ class UsbTransport(private val context: Context) {
      */
     fun requestPermission(device: UsbDevice) {
         if (!usbManager.hasPermission(device)) {
+            val intent = Intent(ACTION_USB_PERMISSION).apply {
+                setPackage(context.packageName)
+            }
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
             val permissionIntent = PendingIntent.getBroadcast(
                 context,
                 0,
-                Intent(ACTION_USB_PERMISSION),
-                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                intent,
+                flags
             )
             usbManager.requestPermission(device, permissionIntent)
         }
