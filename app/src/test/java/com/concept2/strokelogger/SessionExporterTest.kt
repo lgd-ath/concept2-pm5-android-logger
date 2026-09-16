@@ -4,7 +4,7 @@ import com.concept2.strokelogger.data.exporter.CsvSessionExporter
 import com.concept2.strokelogger.data.exporter.JsonSessionExporter
 import com.concept2.strokelogger.data.model.Stroke
 import com.concept2.strokelogger.data.model.WorkoutSession
-import org.json.JSONObject
+import com.google.gson.JsonParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -56,27 +56,27 @@ class SessionExporterTest {
         val session = createSampleSession()
         val jsonStr = JsonSessionExporter.exportToJson(session)
 
-        val jsonObj = JSONObject(jsonStr)
-        assertEquals("ergomonitor-session", jsonObj.getString("format"))
-        assertEquals(3, jsonObj.getInt("version"))
+        val jsonObj = JsonParser.parseString(jsonStr).asJsonObject
+        assertEquals("ergomonitor-session", jsonObj.get("format").asString)
+        assertEquals(3, jsonObj.get("version").asInt)
         assertTrue(jsonObj.has("exportedAt"))
         assertTrue(jsonObj.has("title"))
 
-        val strokesArray = jsonObj.getJSONArray("strokes")
-        assertEquals(2, strokesArray.length())
+        val strokesArray = jsonObj.getAsJsonArray("strokes")
+        assertEquals(2, strokesArray.size())
 
-        val firstStroke = strokesArray.getJSONObject(0)
-        assertEquals(1, firstStroke.getInt("n"))
-        assertEquals(210, firstStroke.getInt("watts"))
-        assertEquals(24, firstStroke.getInt("spm"))
-        assertEquals(720, firstStroke.getInt("driveMs"))
-        assertEquals(1780, firstStroke.getInt("recovMs"))
-        assertEquals(125, firstStroke.getInt("drag"))
+        val firstStroke = strokesArray.get(0).asJsonObject
+        assertEquals(1, firstStroke.get("n").asInt)
+        assertEquals(210, firstStroke.get("watts").asInt)
+        assertEquals(24, firstStroke.get("spm").asInt)
+        assertEquals(720, firstStroke.get("driveMs").asInt)
+        assertEquals(1780, firstStroke.get("recovMs").asInt)
+        assertEquals(125, firstStroke.get("drag").asInt)
 
-        val forceMap = firstStroke.getJSONArray("forceMap")
-        assertEquals(12, forceMap.length())
-        assertEquals(0, forceMap.getInt(0))
-        assertEquals(210, forceMap.getInt(5))
+        val forceMap = firstStroke.getAsJsonArray("forceMap")
+        assertEquals(12, forceMap.size())
+        assertEquals(0, forceMap.get(0).asInt)
+        assertEquals(210, forceMap.get(5).asInt)
     }
 
     @Test
