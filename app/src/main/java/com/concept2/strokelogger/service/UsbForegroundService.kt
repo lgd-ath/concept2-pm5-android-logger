@@ -144,8 +144,7 @@ class UsbForegroundService : Service() {
      */
     suspend fun connectToDevice(): Boolean {
         val device = transport.findDevice() ?: return false
-        transport.requestPermission(device)
-        return transport.connect(device)
+        return transport.requestPermissionAndConnect(device)
     }
 
     /**

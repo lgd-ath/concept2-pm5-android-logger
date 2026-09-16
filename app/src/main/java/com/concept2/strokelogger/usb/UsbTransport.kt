@@ -84,6 +84,77 @@ class UsbTransport(private val context: Context) {
     }
 
     /**
+     * Prompts the user for permission (if needed) and awaits the result before connecting.
+     */
+    suspend fun requestPermissionAndConnect(device: UsbDevice): Boolean = withContext(Dispatchers.Main) {
+        if (usbManager.hasPermission(device)) {
+            return@withContext connect(device)
+        }
+
+        val deferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(recvContext: Context, intent: Intent) {
+                if (intent.action == ACTION_USB_PERMISSION) {
+                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                    Log.i(TAG, "USB permission result received: granted=$granted")
+                    try {
+                        recvContext.unregisterReceiver(this)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Receiver already unregistered: ${e.message}")
+                    }
+                    deferred.complete(granted)
+                }
+            }
+        }
+
+        val filter = android.content.IntentFilter(ACTION_USB_PERMISSION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            androidx.core.content.ContextCompat.registerReceiver(
+                context,
+                receiver,
+                filter,
+                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+        } else {
+            context.registerReceiver(receiver, filter)
+        }
+
+        val intent = Intent(ACTION_USB_PERMISSION).apply {
+            setPackage(context.packageName)
+        }
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        val permissionIntent = PendingIntent.getBroadcast(
+            context,
+            0,
+            intent,
+            flags
+        )
+        usbManager.requestPermission(device, permissionIntent)
+
+        val granted = try {
+            kotlinx.coroutines.withTimeout(20000L) {
+                deferred.await()
+            }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            try {
+                context.unregisterReceiver(receiver)
+            } catch (_: Exception) {}
+            Log.w(TAG, "USB permission prompt timed out")
+            false
+        }
+
+        if (granted) {
+            connect(device)
+        } else {
+            false
+        }
+    }
+
+    /**
      * Opens connection to the Concept2 monitor and claims Interface 0.
      * @return true if successfully connected and endpoints acquired.
      */
