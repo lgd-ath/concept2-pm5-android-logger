@@ -167,6 +167,10 @@ class MainActivity : ComponentActivity() {
                         onFinishWorkout = {
                             completedSession = usbServiceState.value?.stopRecording()
                             isRecordingState.value = false
+                            if (completedSession != null) {
+                                // Automatically save CSV & JSON directly to Documents/ErgoSessions upon workout finish
+                                GoogleDriveBridge.saveToLocalDocuments(this@MainActivity, completedSession!!)
+                            }
                             showExportDialog = true
                         }
                     )
@@ -174,6 +178,9 @@ class MainActivity : ComponentActivity() {
                     if (showExportDialog && completedSession != null) {
                         ExportDialog(
                             session = completedSession!!,
+                            onShareCsv = {
+                                GoogleDriveBridge.shareCsvForWebTool(this@MainActivity, completedSession!!)
+                            },
                             onSaveToGoogleDrive = {
                                 GoogleDriveBridge.shareToGoogleDrive(this@MainActivity, completedSession!!)
                             },

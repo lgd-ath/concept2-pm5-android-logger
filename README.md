@@ -13,11 +13,12 @@ Outputs sessions in the exact same schema required by the **Concept2 Stroke-by-S
 
 ## Key Features
 
-* **High-Frequency CSAFE USB Engine (~35 Hz)**: Direct USB-HID endpoint communication reading real-time stroke states, instantaneous power (Watts), cadence (SPM), work time, and drag factor.
-* **Full Discrete Force Curve Extraction**: Captures 16-bit handle force samples (Newtons) for every stroke drive phase with zero data truncation.
+* **High-Frequency CSAFE USB Engine (~28.5 Hz)**: Direct USB-HID endpoint communication reading real-time stroke states, instantaneous power (Watts), cadence (SPM), work time, and drag factor with 100ms idle responsiveness.
+* **Full Discrete Force Curve Extraction**: Captures 16-bit handle force samples (Newtons) for every stroke drive phase with ErgometerJS parity and physiological fallback synthesis.
+* **Automatic CSV & JSON Saving**: Immediately writes website-ready 19-column CSV (`ergo-strokes-*.csv`) and JSON backups to `Documents/ErgoSessions/` upon tapping Finish Workout.
+* **One-Tap Website Tool CSV Export**: Direct share sheet export with explicit `text/csv` MIME type for seamless drag-and-drop into the Stroke-by-Stroke Analyzer.
 * **Dual Simultaneous Connections (ErgData Friendly)**: PM5 operates Bluetooth Low Energy (BLE) and USB simultaneously. You can run **ErgData** in the background or foreground to sync to the C2 Online Logbook while this app records stroke-by-stroke telemetry over USB-C OTG.
 * **Uninterrupted Background Recording**: Employs an Android 15 `connectedDevice` Foreground Service and CPU `WakeLock` to prevent Samsung One UI / Android OS from terminating recording when the screen turns off or you switch apps.
-* **One-Tap Google Drive Upload**: Directly uploads lossless JSON (`ergomonitor-session` v3) and telemetry CSV (`ergo-strokes.csv`) files to your Google Drive for immediate workstation analysis.
 * **Athletic Jetpack Compose UI**: High-contrast dark cockpit featuring a 60 FPS vector force curve canvas with peak force marker and impulse calculation.
 
 ---

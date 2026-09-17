@@ -36,6 +36,7 @@ import com.concept2.strokelogger.ui.theme.TextPrimary
 @Composable
 fun ExportDialog(
     session: WorkoutSession,
+    onShareCsv: () -> Unit,
     onSaveToGoogleDrive: () -> Unit,
     onSaveToDocuments: () -> Unit,
     onDismiss: () -> Unit
@@ -70,21 +71,20 @@ fun ExportDialog(
                 SummaryStat("Distance", "${session.totalMeters.toInt()} m")
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(18.dp))
 
             Text(
-                text = "Export both JSON & CSV directly for the Stroke-by-Stroke Analyzer:",
-                color = TextMuted,
-                fontSize = 12.sp
+                text = "Session auto-saved to Documents/ErgoSessions",
+                color = AccentGreen,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
             )
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
-            // Primary Google Drive button
+            // Primary CSV export for Stroke-by-Stroke Web Analyzer
             Button(
-                onClick = {
-                    onSaveToGoogleDrive()
-                },
+                onClick = onShareCsv,
                 colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier
@@ -92,7 +92,7 @@ fun ExportDialog(
                     .height(48.dp)
             ) {
                 Text(
-                    text = "☁  Upload to Google Drive",
+                    text = "📊  Export CSV (for Website Tool)",
                     color = CarbonCard,
                     fontWeight = FontWeight.Bold,
                     fontSize = 15.sp
@@ -101,18 +101,16 @@ fun ExportDialog(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Local storage export
+            // Secondary Google Drive bundle upload
             OutlinedButton(
-                onClick = {
-                    onSaveToDocuments()
-                },
+                onClick = onSaveToGoogleDrive,
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(44.dp)
             ) {
                 Text(
-                    text = "Save to Phone (Documents/ErgoSessions)",
+                    text = "☁  Upload Bundle to Google Drive (CSV + JSON)",
                     color = TextPrimary,
                     fontSize = 13.sp
                 )

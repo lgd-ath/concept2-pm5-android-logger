@@ -20,6 +20,40 @@ object GoogleDriveBridge {
     private const val AUTHORITY = "com.concept2.strokelogger.fileprovider"
 
     /**
+     * Dedicated share intent for the 19-column CSV file formatted for the
+     * Concept2 Stroke-by-Stroke Web Analyzer. Uses explicit `text/csv` MIME type
+     * so receiving applications (Google Drive, Gmail, Drive Sync) preserve the .csv extension.
+     */
+    fun shareCsvForWebTool(context: Context, session: WorkoutSession) {
+        try {
+            val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+            val csvFilename = CsvSessionExporter.generateFilename(session)
+            val csvFile = File(exportDir, csvFilename)
+            FileOutputStream(csvFile).use { it.write(CsvSessionExporter.exportToStandardCsv(session).toByteArray()) }
+
+            val csvUri: Uri = FileProvider.getUriForFile(context, AUTHORITY, csvFile)
+
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/csv"
+                putExtra(Intent.EXTRA_STREAM, csvUri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                putExtra(Intent.EXTRA_SUBJECT, "Concept2 Stroke CSV: ${session.title}")
+                putExtra(
+                    Intent.EXTRA_TEXT,
+                    "Concept2 PM5 Stroke Data (${session.strokeCount} strokes, ${session.avgWatts} W avg).\nReady to import into Stroke-by-Stroke Analyzer."
+                )
+            }
+
+            val chooser = Intent.createChooser(shareIntent, "Export CSV (for Web Analyzer)").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(chooser)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to share CSV for web tool", e)
+        }
+    }
+
+    /**
      * Writes the session JSON and CSV files to the app's cache and fires
      * an Android Share Sheet intent. This allows the user to tap "Save to Drive"
      * to upload both files directly into any Google Drive folder.
