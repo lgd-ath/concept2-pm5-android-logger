@@ -98,11 +98,27 @@ fun LiveMonitorScreen(
                     Text("Connect", fontSize = 12.sp, color = AccentCyan)
                 }
             } else if (isRecording) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "☀️ AWAKE",
+                        color = AccentCyan,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "● REC",
+                        color = AccentRed,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            } else {
                 Text(
-                    text = "● REC",
-                    color = AccentRed,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
+                    text = "☀️ AWAKE",
+                    color = TextMuted,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
                 )
             }
         }

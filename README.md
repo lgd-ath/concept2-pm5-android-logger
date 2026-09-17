@@ -19,6 +19,7 @@ Outputs sessions in the exact same schema required by the **Concept2 Stroke-by-S
 * **One-Tap Website Tool CSV Export**: Direct share sheet export with explicit `text/csv` MIME type for seamless drag-and-drop into the Stroke-by-Stroke Analyzer.
 * **Dual Simultaneous Connections (ErgData Friendly)**: PM5 operates Bluetooth Low Energy (BLE) and USB simultaneously. You can run **ErgData** in the background or foreground to sync to the C2 Online Logbook while this app records stroke-by-stroke telemetry over USB-C OTG.
 * **Uninterrupted Background Recording**: Employs an Android 15 `connectedDevice` Foreground Service and CPU `WakeLock` to prevent Samsung One UI / Android OS from terminating recording when the screen turns off or you switch apps.
+* **Always-On Cockpit Display (No Screen Dimming / No Screenlock)**: Enforces `FLAG_KEEP_SCREEN_ON` and Android 8+ `showWhenLocked` / `turnScreenOn` so the phone mounted on the ergometer stays 100% bright and never dims, sleeps, or locks during workouts.
 * **Athletic Jetpack Compose UI**: High-contrast dark cockpit featuring a 60 FPS vector force curve canvas with peak force marker and impulse calculation.
 
 ---
